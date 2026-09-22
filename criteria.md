@@ -64,7 +64,7 @@ I picked advice_threads to go next step, the size is not large, and each documen
 
 
 **Why this target:**
-Since the documents are relatively samll and only contain a few replies(around 4), so I expect smaller chuns to work better by preserving the context.
+Since the documents are relatively samll and only contain a few replies(around 4), so I expect smaller chunks to work better by preserving the context.
 
 
 ---

@@ -53,30 +53,36 @@
 
      Milestone 3. -->
 
-**Chunk 1** — source: `` — produced by: ``
+======================================================================
+Chunk 1  |  source: thread_bike_commute.txt#0  |  produced by: chunker.py::split_documents
+======================================================================
+THREAD: Is a bike worth it for a 20 minute walk commute?
+Yeah. Cuts an 18 minute walk to about 6. The thing nobody mentions is storage — covered bike parking exists at three buildings and is full by 9am at all three.
 
-```
-```
+======================================================================
+Chunk 2  |  source: thread_first_gen.txt#1  |  produced by: chunker.py::split_documents
+======================================================================
+THREAD: Anything specific for first-generation students?
+The thing I'd say: the unwritten rules are the hard part, not the coursework. Ask about the unwritten rules explicitly. People are happy to explain them and nobody volunteers them.
 
-**Chunk 2** — source: `` — produced by: ``
+======================================================================
+Chunk 3  |  source: thread_laptop_specs.txt#2  |  produced by: chunker.py::split_documents
+======================================================================
+THREAD: How much laptop do I actually need for CS courses?
+I did two years on an 8GB machine and it was fine until the last project, at which point it very much wasn't. 16 is the answer.
 
-```
-```
+======================================================================
+Chunk 4  |  source: thread_parking.txt#1  |  produced by: chunker.py::split_documents
+======================================================================
+THREAD: Worth getting a parking permit?
+Street parking on Verrill is legal and free and unmarked, which is why half the upper years do it.
 
-**Chunk 3** — source: `` — produced by: ``
-
-```
-```
-
-**Chunk 4** — source: `` — produced by: ``
-
-```
-```
-
-**Chunk 5** — source: `` — produced by: ``
-
-```
-```
+======================================================================
+Chunk 5  |  source: thread_sleep_schedule.txt#1  |  produced by: chunker.py::split_documents
+======================================================================
+THREAD: Everyone says fix your sleep. Does it actually matter?
+The library being open until 2am is a trap. It's a resource, not a schedule.
+>Chunk 5 was under that sleep_schedult file, but not directly related to the question.
 
 ## Sample Answer
 
@@ -84,13 +90,14 @@
      visible. Milestone 4. -->
 
 **Question:**
+what kind of meal plan should I buy
 
 **Answer:**
-
+Based on the provided documents, the meal plan you should buy depends entirely on whether your building has a kitchen. If your building has a kitchen (like Fenwick, which has kitchenettes), you should go down a tier and cook two or three nights, while everywhere else you should get the middle tier.
 ```
 ```
 
-**My relevance cutoff:**
+**My relevance cutoff: 0.5**
 
 <!-- The number you set in config.py, and how you got there.
 
@@ -101,9 +108,20 @@
 
      Milestone 4. -->
 
-| Question | In corpus? | Best distance |
-|---|---|---|
-|  |  |  |
+| Question | In corpus-advice_threads | Best distance |
+
+>-- in scope --
+0.398  should i take a bike if it's going to take me 20 mins  -> thread_bike_commute.txt#2
+0.161  is it hard to change my major in the second year  -> thread_changing_major.txt#2
+0.336  Anything specific for first-generation students?  -> thread_first_gen.txt#1
+0.319  Is it matter to fix my sleep  -> thread_sleep_schedule.txt#2
+0.299  which kind of meal plan is much better  -> thread_meal_plan_tier.txt#2
+>-- out of scope --
+0.899  What is the capital of Mongolia?
+0.905  How do I change the oil in a diesel engine?
+0.898  Who won the 1994 World Cup?
+0.819  What is the recommended dosage of ibuprofen for a headache?
+0.861  How do I write a for loop in Rust?
 
 ## How I Used AI
 
@@ -117,9 +135,9 @@
      Milestone 5. -->
 
 **1.**
-
+I asked Claude how chunks and overlap work with each other, and how to select the key info from prompt to choose my cutoff.
 **2.**
-
+I also find that even we provide the necessary documents and ask questions from them, but if our documents have that is not directly related: like some alternative name only if you're a student here. The system can't judge its relevance and connect it to current question. 
 <!-- ── Stretch features ─────────────────────────────────────────────────────
      Doing one? Say so here BEFORE you start. A feature this README never
      claims earns nothing.
