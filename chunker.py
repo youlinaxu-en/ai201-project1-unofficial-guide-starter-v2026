@@ -22,6 +22,7 @@ to it, write down what you saw, and move on. That's a real observation about
 your pipeline, not giving up.
 """
 
+import re
 from dataclasses import dataclass
 
 import config
@@ -96,8 +97,37 @@ def split_documents(documents: list[Document]) -> list[Chunk]:
       - Is the useful information in one sentence, or spread over a paragraph?
       - Would splitting on paragraph breaks keep more thoughts intact than
         splitting on a character count?
+
+    Strategy for advice_threads: every file is one forum thread — a
+    "THREAD: <question>" title line followed by replies separated by
+    "--- reply N (votes) ---" markers. Each reply is one self-contained
+    opinion, so one reply becomes one chunk. The title is prepended to every
+    chunk because a reply rarely repeats the question it answers.
     """
-    return fallback_split(documents)
+    reply_marker = re.compile(r"^--- reply \d+ .*---\s*$", re.MULTILINE)
+
+    chunks: list[Chunk] = []
+    for doc in documents:
+        parts = reply_marker.split(doc.text)
+        title = parts[0].strip()
+        replies = [p.strip() for p in parts[1:] if p.strip()]
+
+        if not replies:
+            # No reply markers — not a thread-shaped file. Keep it whole.
+            replies = [doc.text.strip()]
+            title = ""
+
+        for index, reply in enumerate(replies):
+            chunks.append(
+                Chunk(
+                    text=f"{title}\n{reply}" if title else reply,
+                    source=doc.source,
+                    index=index,
+                    produced_by="chunker.py::split_documents",
+                )
+            )
+
+    return chunks
 
 
 def describe(chunks: list[Chunk]) -> str:
