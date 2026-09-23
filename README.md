@@ -21,26 +21,21 @@
 
 ## What This Does
 
-<!-- Three or four sentences. Which corpus you picked, and the kinds of
-     questions your system answers. Write it for someone who has never seen
-     this repo.
-
-     Milestone 5. -->
+This is a small retrieval-augmented question answering system over the `advice_threads` corpus: 23 forum-style threads where several students reply to one practical question about campus life, such as whether a bike is worth it for a 20-minute commute, which meal plan tier to buy, how hard it is to change major in second year, or what first-generation students should know. Each thread is split into its individual replies, the replies are embedded locally with `all-MiniLM-L6-v2` and stored in Chroma, and a new question pulls back the six closest replies by distance. If even the closest reply is further away than the relevance cutoff, the system answers "I don't have enough information about that" instead of guessing; otherwise Gemini writes a short answer from those replies and names the thread file it came from. It does best on "should I / is it worth it / which one" questions whose answer is an opinion sitting in one reply, and it does worse when a question depends on campus-specific names or nicknames that the documents only use in passing, because nothing in the pipeline knows those refer to the same thing the question is asking about.
 
 ## Chunking Strategy
 
-**Chunk size:**
-**Overlap:**
+**Chunk size:** one reply per chunk, with the thread's `THREAD: ...` title line prepended. On this corpus that comes out at 104 to 253 characters (174 on average), 75 chunks from 23 threads. The `CHUNK_SIZE = 800` in `config.py` is no longer read by `split_documents`; only `fallback_split` uses it.
 
-<!-- What about YOUR documents made you pick these numbers? Short posts and
-     long sectioned guides don't want the same chunking, and "800 seemed
-     reasonable" earns nothing. Point at something you noticed when you read
-     the documents in Milestone 1.
+**Overlap:** 0 characters between neighbouring replies. Instead, every chunk from the same thread repeats the title line, which does the job overlap normally does: it carries the question into each piece so the piece still makes sense on its own.
 
-     If you changed your mind partway through, say so and say why. That's worth
-     more than pretending you got it right first time.
+**Why these numbers.** When I read the documents in Milestone 1, every file had the same shape: one `THREAD: <question>` line, then two to five replies separated by `--- reply N (votes) ---` markers. A whole thread is 317 to 793 characters, and each reply is one to three sentences holding one self-contained opinion, often disagreeing with the reply above it. That is why I wrote in `criteria.md` that I expected small chunks to work better here.
 
-     Milestone 3. -->
+The starter's default numbers did badly on this shape. With an 800-character window nothing gets cut, so every thread came back as one chunk with all the disagreeing replies mixed together (the meal-plan thread's "get the middle tier", "the highest tier only makes sense if you eat three meals a day in the halls" and "you can only change it once" all land in the same chunk). Worse, the window steps forward by 680 characters (800 minus the 120 overlap) without checking whether anything is left, so the three threads longer than 680 characters also produced a duplicate tail fragment; the shortest was 2 characters long. That gave 26 chunks, 3 of them junk. A fixed window and a useful boundary were never going to line up here, but the reply markers already are the useful boundary, so I split on those instead.
+
+The title matters more than it looks. A bare reply like `16 is the answer.` (thread_laptop_specs.txt#2) or `The library being open until 2am is a trap.` means nothing without the question it answers, so a question about laptops would never land on it. Prepending the title is what lets a one-line reply embed near the question it answers.
+
+I did not change the strategy partway through, but running `app.py chunks` showed me its cost. Sample Chunk 5 below is on the sleep thread and does not actually answer the question about sleep. With one reply per chunk there is nothing else in the chunk to pull it back toward the topic, so a tangential reply can be retrieved on the strength of its title alone. That is the trade I made for keeping each opinion separate, and it is the first thing I would look at if criterion 1 misses in unit 2.
 
 ## Sample Chunks
 
@@ -125,19 +120,9 @@ Based on the provided documents, the meal plan you should buy depends entirely o
 
 ## How I Used AI
 
-<!-- Two specific moments. For each: what you asked for, what came back, and
-     what you changed about it.
+>1. Setting the relevance cutoff. I asked where my five test questions lived and what the best distance was for each. Claude ran retrieval on the five in `QUESTIONS` and the five in `OUT_OF_SCOPE` and gave back the table that is now under "My relevance cutoff": in-scope best distances from 0.161 to 0.398, out-of-scope from 0.819 to 0.905. Its recommendation was to leave `THRESHOLD` at the default 0.6, since that already sits inside the gap. I did not take that as-is. I set the cutoff at 0.5 instead, so it sits closer to the in-scope group than to the out-of-scope one, and a question that is only loosely about my corpus is more likely to be refused than half-answered. Around the same time I asked where to change top-k and moved it from 5 to 6 in `config.py`, so a whole five-reply thread plus one neighbour can come back for a single question.
 
-     "I asked Claude to write the chunking function from my notes. It ignored
-     the overlap, so I added that myself" is the level of detail we're after.
-     "I used AI to help me code" is not.
 
-     Milestone 5. -->
-
-**1.**
-I asked Claude how chunks and overlap work with each other, and how to select the key info from prompt to choose my cutoff.
-**2.**
-I also find that even we provide the necessary documents and ask questions from them, but if our documents have that is not directly related: like some alternative name only if you're a student here. The system can't judge its relevance and connect it to current question. 
 <!-- ── Stretch features ─────────────────────────────────────────────────────
      Doing one? Say so here BEFORE you start. A feature this README never
      claims earns nothing.
