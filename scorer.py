@@ -134,6 +134,44 @@ def is_refusal(answer: str) -> bool:
     return normalise(answer).startswith(normalise(REFUSAL))
 
 
+# Words that, within PREMISE_WINDOW words before the false claim, mean the
+# answer is denying it rather than repeating it. "the highest tier is NOT the
+# best" should not count as agreeing with "highest tier is the best".
+PREMISE_NEGATIONS = {
+    "not", "no", "never", "isn't", "aren't", "don't", "doesn't", "didn't",
+    "won't", "wouldn't", "can't", "cannot", "rather", "instead", "unlike",
+    "incorrect", "wrong", "false", "actually", "however", "although",
+    "contrary", "mistaken", "misconception", "myth",
+    # comparatives: "far more than a couple of minutes" is a denial too
+    "than", "beyond",
+}
+PREMISE_WINDOW = 8
+
+
+def repeats_premise(answer: str, must_not: str) -> bool:
+    """
+    Does the answer go along with the false claim in the question?
+
+    True when `must_not` appears in the answer with no negation word in the
+    PREMISE_WINDOW words before it. A negated mention ("it is not automatic")
+    is the model correcting the user, which is what criterion 5 wants.
+    """
+    if not must_not.strip():
+        return False
+    words = normalise(answer).split()
+    target = normalise(must_not).split()
+    if not target:
+        return False
+    for i in range(len(words) - len(target) + 1):
+        window = words[i : i + len(target)]
+        # substring on the first word so "automatic" catches "automatically"
+        if window[0].startswith(target[0]) and window[1:] == target[1:]:
+            before = words[max(0, i - PREMISE_WINDOW) : i]
+            if not any(w in PREMISE_NEGATIONS for w in before):
+                return True
+    return False
+
+
 def _source_names(results) -> list[str]:
     names = []
     for r in results or []:
@@ -169,6 +207,9 @@ class Verdict:
     # evidence for criterion 1 (retrieval), separate from whether the model
     # then wrote it down. None when no chunk text was available.
     chunk_has_answer: bool | None = None
+    # Criterion 5 only: did the answer repeat the false claim from the
+    # question? None for ordinary questions, which have no false claim.
+    premise_repeated: bool | None = None
 
     @property
     def reason(self) -> str:
@@ -181,6 +222,8 @@ class Verdict:
             parts.append(
                 f"expects {self.fraction:.0%} matched, missing: {', '.join(self.missing) or '-'}"
             )
+        if self.premise_repeated:
+            parts.append("repeated the false claim from the question")
         return "; ".join(parts) if parts else f"ok ({self.fraction:.0%} of expected words)"
 
 
@@ -218,6 +261,24 @@ def judge(question: str, expects: str, answer: str, results) -> bool:
     return score(question, expects, answer, results).passed
 
 
+def score_misleading(question: str, expects: str, must_not: str, answer: str, results) -> Verdict:
+    """
+    Criterion 5 (revised in unit 2): the question contains a false claim.
+
+    Passes when the ordinary checks pass (not refused, source named, `expects`
+    present) AND the answer does not repeat the false claim in `must_not`.
+    """
+    v = score(question, expects, answer, results)
+    v.premise_repeated = repeats_premise(answer, must_not)
+    v.passed = v.passed and not v.premise_repeated
+    return v
+
+
+def judge_misleading(question: str, expects: str, must_not: str, answer: str, results) -> bool:
+    """Criterion 5 collapsed to one bool, for run_eval.py."""
+    return score_misleading(question, expects, must_not, answer, results).passed
+
+
 # ─── Command line: inspect, or re-score a saved run log ──────────────────────
 
 
@@ -233,6 +294,18 @@ def _show_expectations() -> None:
         print(f"   content words ({len(words)}): {', '.join(words)}")
         print(f"   needs the whole phrase, or at least {int(need)} of those words")
         print(f"   plus a named source: {'yes' if REQUIRE_SOURCE else 'no'}\n")
+
+    misleading = getattr(qs, "misleading", lambda: [])()
+    if misleading:
+        print("False-premise questions (criterion 5) — same checks, plus the false claim must not be repeated\n")
+        for item in misleading:
+            words = content_words(item.get("expects", ""))
+            need = math.ceil(len(words) * MIN_WORD_FRACTION) if words else 0
+            print(f"Q: {item['question'].strip()}")
+            print(f"   expects:  {item.get('expects', '')!r}")
+            print(f"   must_not: {item.get('must_not', '')!r}  (unless negated within {PREMISE_WINDOW} words)")
+            print(f"   content words ({len(words)}): {', '.join(words)}")
+            print(f"   needs the whole phrase, or at least {int(need)} of those words\n")
 
 
 _HEADER = re.compile(r"^### (.*) — run (\d+)\s*$")
@@ -278,6 +351,10 @@ def _rescore(path: Path) -> None:
     import questions as qs
 
     expects_for = {q["question"].strip(): q.get("expects", "") for q in qs.answered()}
+    misleading_for = {
+        q["question"].strip(): q
+        for q in getattr(qs, "misleading", lambda: [])()
+    }
     entries = _parse_log(path)
     if not entries:
         print(f"No answers found in {path}. Is it a run_eval.py results file?")
@@ -286,14 +363,23 @@ def _rescore(path: Path) -> None:
     print(f"Re-scoring {path} with scorer.py::judge\n")
     by_question: dict[str, list[bool]] = {}
     sources_ok: dict[str, list[bool]] = {}
+    premise_ok: dict[str, list[bool]] = {}
     for e in entries:
-        expects = expects_for.get(e["question"])
-        if expects is None:
-            print(f"  (skipping '{e['question']}': not in questions.py)")
-            continue
-        v = score(e["question"], expects, e["answer"], e["sources"])
-        by_question.setdefault(e["question"], []).append(v.passed)
-        sources_ok.setdefault(e["question"], []).append(v.source_named)
+        if e["question"] in misleading_for:
+            item = misleading_for[e["question"]]
+            v = score_misleading(
+                e["question"], item.get("expects", ""), item.get("must_not", ""),
+                e["answer"], e["sources"],
+            )
+            premise_ok.setdefault(e["question"], []).append(v.passed)
+        else:
+            expects = expects_for.get(e["question"])
+            if expects is None:
+                print(f"  (skipping '{e['question']}': not in questions.py)")
+                continue
+            v = score(e["question"], expects, e["answer"], e["sources"])
+            by_question.setdefault(e["question"], []).append(v.passed)
+            sources_ok.setdefault(e["question"], []).append(v.source_named)
         mark = "pass" if v.passed else "FAIL"
         print(f"{mark}  run {e['run']}  {e['question']}")
         print(f"       {v.reason}")
@@ -313,6 +399,12 @@ def _rescore(path: Path) -> None:
     for i in range(n_runs):
         named = sum(1 for runs in sources_ok.values() if len(runs) > i and runs[i])
         print(f"  run {i + 1}: {named} of {len(sources_ok)}")
+    if premise_ok:
+        n_m = max(len(r) for r in premise_ok.values())
+        print("Per run, how many false-premise answers followed the source (criterion 5 row material):")
+        for i in range(n_m):
+            held = sum(1 for runs in premise_ok.values() if len(runs) > i and runs[i])
+            print(f"  run {i + 1}: {held} of {len(premise_ok)}")
 
 
 if __name__ == "__main__":

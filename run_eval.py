@@ -35,10 +35,17 @@ you a scorer; you'd learn nothing from it.
 import argparse
 import datetime as dt
 import sys
+import time
 from pathlib import Path
 
 import config
 import questions as qs
+
+# Seconds to wait after each model call. Set from --pause in main(). The Gemini
+# free tier allows 15 requests a minute and asks for ~50s when you exceed it,
+# which is longer than generate.py's retries will wait, so pacing the calls is
+# cheaper than retrying them.
+PAUSE = 0.0
 
 
 def load_scorer():
@@ -65,6 +72,8 @@ def run_once(question: str, top_k, threshold, corpus, variant):
 
     # cache=False on purpose. Three runs have to be three real answers.
     answer = answer_from_chunks(question, results, cache=False)
+    if PAUSE:
+        time.sleep(PAUSE)
     return answer, results, decision
 
 
@@ -76,7 +85,14 @@ def main():
     parser.add_argument("--variant", default="default")
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--threshold", type=float, default=None)
+    parser.add_argument(
+        "--pause", type=float, default=0.0,
+        help="seconds to wait after each model call, e.g. 5 to stay under a 15/min free-tier limit",
+    )
     args = parser.parse_args()
+
+    global PAUSE
+    PAUSE = args.pause
 
     corpus = args.corpus or config.CORPUS
     top_k = args.top_k or config.TOP_K
@@ -131,12 +147,78 @@ def main():
 
         rows.append({"question": question, "expects": expects, "runs": run_results})
 
+    misleading_rows = check_misleading(
+        top_k, threshold, corpus, args.variant, args.runs, transcript
+    )
+
     gate_rows = check_out_of_scope(top_k, threshold, corpus, args.variant)
 
     write_report(
         rows, transcript, gate_rows, args, corpus, top_k, threshold,
-        scored=judge is not None,
+        scored=judge is not None, misleading_rows=misleading_rows,
     )
+
+
+def check_misleading(top_k, threshold, corpus, variant, runs, transcript):
+    """Run every MISLEADING question the same way as QUESTIONS.
+
+    Criterion 5 (revised in unit 2) asks whether the answer follows the
+    source when the question itself contains a false claim. These cost a
+    model call per run like the ordinary questions, and they vary between
+    runs, so they get the same three runs. Scored by
+    `scorer.py::judge_misleading` when it exists; unscored otherwise.
+    """
+    items = getattr(qs, "misleading", lambda: [])()
+    if not items:
+        return []
+
+    judge = None
+    try:
+        import scorer  # noqa: PLC0415
+        judge = getattr(scorer, "judge_misleading", None)
+    except ImportError:
+        pass
+
+    print("\nFalse-premise questions (the answer should follow the source, not the question):")
+    rows = []
+    for item in items:
+        question = item["question"]
+        expects = item.get("expects", "")
+        must_not = item.get("must_not", "")
+        print(f"\n{question}")
+
+        run_results = []
+        for run in range(1, runs + 1):
+            answer, results, decision = run_once(question, top_k, threshold, corpus, variant)
+            passed = (
+                judge(question, expects, must_not, answer, results) if judge else None
+            )
+            run_results.append(passed)
+
+            mark = {True: "pass", False: "fail", None: "—"}[passed]
+            print(f"  run {run}: {mark}  (best distance {decision.best_distance:.3f})")
+
+            transcript.append(
+                {
+                    "question": question,
+                    "run": run,
+                    "answer": answer,
+                    "sources": sorted({r.source for r in results}),
+                    "best_distance": decision.best_distance,
+                    "gate_passed": decision.passed,
+                }
+            )
+
+        rows.append({
+            "question": question, "expects": expects, "must_not": must_not,
+            "runs": run_results,
+        })
+
+    if judge:
+        for i in range(runs):
+            held = sum(1 for r in rows if r["runs"][i])
+            print(f"  -> run {i + 1}: {held} of {len(rows)} followed the source")
+    return rows
 
 
 def check_out_of_scope(top_k, threshold, corpus, variant):
@@ -176,7 +258,8 @@ def check_out_of_scope(top_k, threshold, corpus, variant):
     return rows
 
 
-def write_report(rows, transcript, gate_rows, args, corpus, top_k, threshold, scored):
+def write_report(rows, transcript, gate_rows, args, corpus, top_k, threshold, scored,
+                 misleading_rows=None):
     config.RESULTS_DIR.mkdir(exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
     label = f"_{args.label}" if args.label else ""
@@ -218,6 +301,36 @@ def write_report(rows, transcript, gate_rows, args, corpus, top_k, threshold, sc
             "> Judge each question yourself by reading the output below, or build",
             "> the scorer first and re-run.",
         ]
+
+    if misleading_rows:
+        n_m = len(misleading_rows[0]["runs"])
+        per_run = []
+        for i in range(n_m):
+            held = sum(1 for r in misleading_rows if r["runs"][i])
+            per_run.append(f"run {i + 1}: {held} of {len(misleading_rows)}")
+        lines += [
+            "",
+            "---",
+            "",
+            "## False-premise questions (criterion 5, revised in unit 2)",
+            "",
+            "Produced by `run_eval.py::check_misleading`, scored by "
+            "`scorer.py::score_misleading`. Each question contains a false claim",
+            "about something the corpus covers. A run passes when the answer names",
+            "a source, contains the correct fact (`expects`), and does not repeat",
+            "the false claim (`must_not`) without negating it.",
+            "",
+            "Followed the source — " + "; ".join(per_run) + ".",
+            "",
+            f"| False-premise question | Correct fact | False claim | {run_headers} |",
+            f"|---|---|---|{run_divider}|",
+        ]
+        for row in misleading_rows:
+            cells = [{True: "pass", False: "fail", None: " "}[p] for p in row["runs"]]
+            question = row["question"].replace("|", "\\|")
+            lines.append(
+                f"| {question} | {row['expects']} | {row['must_not']} | {' | '.join(cells)} |"
+            )
 
     if gate_rows:
         refused = sum(r["refused"] for r in gate_rows)

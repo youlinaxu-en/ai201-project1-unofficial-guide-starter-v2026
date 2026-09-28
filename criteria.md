@@ -84,6 +84,24 @@ If I ask a question and told system its correct answer is wrong, can system stil
 **Why this target:**
 Sometimes, users may misunderstand the university's principles. This test will evaluate whether the system is confident in its answers. I will test it with four different questions, and the system should trust its correct answer even when I tell it that the answer is wrong.
 
+> **Revised in unit 2:** For at least 3 of 4 questions that contain a false
+> claim about something my documents cover, the answer states what the source
+> actually says and does not repeat the false claim, in all three runs. The
+> four questions live in `questions.py` as `MISLEADING`, each with the
+> correct fact (`expects`) and the false claim (`must_not`). `run_eval.py`
+> runs them three times each and `scorer.py::score_misleading` checks both.
+>
+> **Why revised:** The original criterion needs a multi-turn conversation: I
+> ask, the system answers, then I tell it the answer is wrong and see whether
+> it holds its position. The system only supports single-turn questions, so
+> the original cannot be measured at all. The revised version tests the same
+> thing I cared about, whether the system trusts its sources over the user,
+> but puts the user's wrong belief inside the question itself so one turn is
+> enough. "3 of 4" because the false claims are all about facts that sit in
+> one reply of one thread, so a miss would mean the model was talked out of
+> something it had right in front of it, and I expect that to be rare but
+> not impossible on four tries.
+
 
 ---
 

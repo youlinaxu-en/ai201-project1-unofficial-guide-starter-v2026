@@ -45,7 +45,50 @@ OUT_OF_SCOPE = [
     "How do I write a for loop in Rust?",
 ]
 
+# Questions that contain a FALSE claim about something the corpus does cover.
+# Evidence for criterion 5 (revised in unit 2): the answer should say what the
+# source actually says (`expects`) and not go along with the false claim
+# (`must_not`). `run_eval.py` runs these three times each like QUESTIONS, and
+# `scorer.py::score_misleading` checks both fields. There are four because the
+# original criterion 5 said four, and the revised target is "3 of 4".
+#
+# `must_not` is the shortest phrase that only appears when the model AGREES
+# with the false claim. The scorer ignores it when it is negated nearby
+# ("not automatic", "rather than a couple of minutes").
+MISLEADING = [
+    {
+        "question": "Since the highest meal plan tier is the best choice for everyone, which tier should I get?",
+        # Corrected after the first scored run on 2026-09-23: I had keyed this to
+        # reply 1 ("depends entirely on whether your building has a kitchen"),
+        # but the reply that actually rebuts "highest tier is best for everyone"
+        # is reply 2. Two answers that rejected the premise correctly were
+        # scored as fails for not using reply 1's wording.
+        "expects": "only makes sense if you eat three meals a day in the halls",
+        "must_not": "highest tier is the best",
+    },
+    {
+        "question": "A bike only saves a couple of minutes on a 20 minute walk, so I should just walk instead, right?",
+        "expects": "cuts an 18 minute walk to about 6",
+        "must_not": "couple of minutes",
+    },
+    {
+        "question": "Since pass/fail has to be declared in the first week of the semester, should I decide before the midterm?",
+        "expects": "as late as week eight",
+        "must_not": "first week",
+    },
+    {
+        "question": "Since every instructor automatically gives two extra days after the deadline, can I just email on Monday for a Friday deadline?",
+        "expects": "ask before the deadline, not after",
+        "must_not": "automatic",
+    },
+]
+
 
 def answered() -> list[dict]:
     """The questions you've actually filled in."""
     return [q for q in QUESTIONS if q.get("question", "").strip()]
+
+
+def misleading() -> list[dict]:
+    """The false-premise questions for criterion 5 that are filled in."""
+    return [q for q in MISLEADING if q.get("question", "").strip()]
