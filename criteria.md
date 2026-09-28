@@ -66,6 +66,18 @@ I picked advice_threads to go next step, the size is not large, and each documen
 **Why this target:**
 Since the documents are relatively samll and only contain a few replies(around 4), so I expect smaller chunks to work better by preserving the context.
 
+> **Revised in unit 2:** With one-reply chunks (`chunker.py::split_documents`),
+> at least 4 of my 5 test questions pass `scorer.py::judge` in every one of the
+> three runs. The target number is unchanged: "above 75%" on five questions is
+> 4 of 5.
+>
+> **Why revised:** The original says "accuracy above 75%" but never says what
+> is being counted or how, so it could not be put in the run log table without
+> first deciding what "accuracy" meant. The only accuracy the pipeline
+> produces is the per-question pass/fail from `scorer.py`, so that is what the
+> revised version names. Result: MISSED in both runs (4, 3, 3 of 5 before;
+> 2, 5, 3 of 5 after). The misses are diagnosed in the README.
+
 
 ---
 

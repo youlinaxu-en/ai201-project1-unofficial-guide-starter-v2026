@@ -43,7 +43,7 @@ TOP_K = 6           # how many chunks to pull back per question
 # 0.6 is a reasonable starting point, not a right answer. Milestone 4 has you
 # measure your own two groups of distances and put the cutoff in the gap.
 # Most corpora land somewhere between 0.45 and 0.75.
-THRESHOLD = 0.6
+THRESHOLD = 0.5   # Milestone 4: in-scope best distances 0.16-0.40, out-of-scope 0.82-0.91
 
 
 # ─── Models ──────────────────────────────────────────────────────────────────
