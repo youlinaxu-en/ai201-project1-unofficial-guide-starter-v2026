@@ -136,7 +136,10 @@ number — three passes would produce the same three answers.
 | `gate.py` | The relevance gate. Refuses questions nothing came back close enough for |
 | `generate.py` | Writes the answer — **stage 5**. The only thing that calls out to a service |
 | `app.py` | The command line |
-| `serve.py` | The same pipeline behind HTTP, for when it has to run as a service — **unit 9** |
+| `serve.py` | The same pipeline behind HTTP, with structured request logging and timing — **unit 9** |
+| `send_questions.py` | Sends a batch of questions to a running `serve.py` to produce a log |
+| `summarize_log.py` | Turns `logs/requests.jsonl` into counts, refusal rate and latency percentiles |
+| `logs/` | The structured run record, written by `serve.py`. **Commit this** |
 | `run_eval.py` | Runs your questions repeatedly and writes the run log |
 | `questions.py` | Your five test questions, and the five out-of-corpus ones the gate should refuse. **You fill in the first five** |
 | `criteria.md` | Your five acceptance criteria. **You fill this in** |
@@ -217,8 +220,64 @@ gunicorn serve:app                 # the way a host starts it
 > the first request after a quiet spell waits roughly a minute for it to wake
 > up. That's the tier, not your code.
 
-`serve.py` has **no logging and no timing in it on purpose** — building that is
-the unit 9 exercise, and it is easier to instrument something you wrote.
+---
+
+## Unit 9 — deployment path: Path B (local, with logs)
+
+This system carries a local embedding model (ONNX MiniLM, run by Chroma), which
+does not fit the 512 MB free hosting tier, so it runs locally from one command
+and keeps a committed record of real sessions.
+
+### Environment
+
+| Need | Value |
+|---|---|
+| Python | 3.13 (3.11–3.13 supported, **not** 3.14). Tested on 3.13.13, Windows 11 |
+| Dependencies | `requirements.txt`, pinned with upper bounds. Tested with `chromadb 0.6.3`, `Flask 3.1.3`, `google-genai 1.75.0`, `gunicorn 23.0.0`, `onnxruntime 1.30.0`, `posthog 3.25.0`, `python-dotenv 1.1.1`, `rank-bm25 0.2.2` |
+| Model files | `all-MiniLM-L6-v2` ONNX, downloaded on first index to `~/.cache/chroma/onnx_models/`: 79 MB archive, ~86 MB `model.onnx` after extraction (~166 MB on disk in total). Source: `chroma-onnx-models.s3.amazonaws.com` |
+| Secret | `GEMINI_API_KEY` in `.env` (copy from `.env.example`). Never committed |
+| Corpus | `campus_life` (default in `config.py`; override with `AI201_CORPUS`) |
+| Index | `chroma_db/` is gitignored, so **it must be built on every fresh checkout**: 88 chunks, about 4 s after the model is downloaded |
+
+### Start it — one sequence from a clean checkout
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env          # paste GEMINI_API_KEY
+python app.py index             # builds the search index (first run downloads the model)
+python serve.py                 # serves on http://localhost:5000
+```
+
+macOS / Linux: `source .venv/bin/activate` and `cp` instead. To run it the way
+a host does, replace the last line with `gunicorn serve:app`.
+
+Check it, from a second terminal:
+
+```powershell
+curl http://localhost:5000/health        # expect "index_ready": true
+python send_questions.py                 # sends a 15-request session: 12 in scope, 2 out of scope, 1 empty
+python summarize_log.py                  # counts, refusal rate, latency percentiles
+```
+
+### The log
+
+Every `POST /ask` appends one JSON line to `logs/requests.jsonl` (override the
+path with `AI201_LOG_PATH`) and echoes it to stdout. Fields:
+
+| Field | Meaning |
+|---|---|
+| `ts`, `request_id` | UTC timestamp and a short id to find one request |
+| `status` | 200, 400 (empty question) or 500 (pipeline error, with `error`) |
+| `refused`, `best_distance`, `threshold` | What the relevance gate decided, and why |
+| `sources` | Source files of the retrieved chunks (empty when refused) |
+| `retrieval_ms` | Embedding + search + gate, up to the model call |
+| `generation_ms` | The model call. `null` when the gate refused, since no call is made |
+| `total_ms` | Whole request |
+
+`logs/` is deliberately **not** gitignored — the committed `requests.jsonl` is
+the run record.
 
 ---
 

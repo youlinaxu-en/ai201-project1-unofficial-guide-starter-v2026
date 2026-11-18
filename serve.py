@@ -20,20 +20,41 @@ Why this exists: `app.py` runs once and exits, which is fine on your laptop
 and impossible to deploy. A hosted service has to stay up and wait for
 requests. This is the smallest thing that does that.
 
-⚠️ There is deliberately no logging, no timing and no metrics in this file.
-Unit 9 has you build the structured log yourself — the request line, the
-timing field everyone skips, the whole instrument-before-you-deploy exercise.
-Shipping a logger here would hand you the answer to that. Add yours in unit 9;
-this file stays the bare shell until then.
+Logging (Unit 9): every /ask writes one JSON line to logs/requests.jsonl (and
+stdout) with request_id, status, refused, best_distance, sources, and timing
+split into retrieval_ms / generation_ms / total_ms. summarize_log.py turns
+that file into the numbers.
 """
 
+import json
 import os
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 from flask import Flask, jsonify, request
 
 import config
 
 app = Flask(__name__)
+
+# Structured log: one JSON object per line, appended to logs/requests.jsonl.
+# logs/ is NOT gitignored on purpose -- a real session's log is the run record.
+LOG_PATH = Path(os.getenv("AI201_LOG_PATH", "logs/requests.jsonl"))
+
+
+def log_event(**fields):
+    """Append one JSON line to the log file and echo it to stdout."""
+    record = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **fields}
+    line = json.dumps(record, ensure_ascii=False)
+    print(line, flush=True)
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError as exc:  # logging must never take the service down
+        print(json.dumps({"event": "log_write_failed", "error": str(exc)}), flush=True)
 
 
 @app.get("/health")
@@ -73,10 +94,16 @@ def ask():
     """
     from app import ask_pipeline
 
+    request_id = uuid.uuid4().hex[:8]
+    started = time.perf_counter()
     payload = request.get_json(silent=True) or {}
     question = (payload.get("question") or "").strip()
 
     if not question:
+        log_event(
+            event="ask", request_id=request_id, status=400, error="empty_question",
+            total_ms=round((time.perf_counter() - started) * 1000, 1),
+        )
         return (
             jsonify(
                 {
@@ -87,10 +114,42 @@ def ask():
             400,
         )
 
+    marks = {}
+
+    def on_gate(_decision):
+        # Fires right after retrieval + gate, before the model call.
+        marks["retrieval_ms"] = round((time.perf_counter() - started) * 1000, 1)
+
     try:
-        outcome = ask_pipeline(question, corpus=config.CORPUS)
+        outcome = ask_pipeline(question, corpus=config.CORPUS, on_gate=on_gate)
     except Exception as exc:  # noqa: BLE001 — a reader gets this, not a traceback
+        log_event(
+            event="ask", request_id=request_id, status=500,
+            question=question, error=f"{type(exc).__name__}: {exc}",
+            total_ms=round((time.perf_counter() - started) * 1000, 1),
+        )
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+    total_ms = round((time.perf_counter() - started) * 1000, 1)
+    retrieval_ms = marks.get("retrieval_ms")
+    log_event(
+        event="ask",
+        request_id=request_id,
+        status=200,
+        corpus=config.CORPUS,
+        question=question,
+        refused=outcome["refused"],
+        best_distance=round(outcome["best_distance"], 4),
+        threshold=outcome["threshold"],
+        sources=outcome["sources"],
+        answer_chars=len(outcome["answer"]),
+        retrieval_ms=retrieval_ms,
+        generation_ms=(
+            None if outcome["refused"] or retrieval_ms is None
+            else round(total_ms - retrieval_ms, 1)
+        ),
+        total_ms=total_ms,
+    )
 
     return jsonify(
         {
