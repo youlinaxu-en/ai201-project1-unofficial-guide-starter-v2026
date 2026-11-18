@@ -152,3 +152,70 @@ Sometimes, users may misunderstand the university's principles. This test will e
      The whole reason the originals stay visible is so someone can see what you
      said before you knew the answer.
      ───────────────────────────────────────────────────────────────────────── -->
+
+
+---
+
+# Unit 9 criteria — the extension (request log, timing, local run)
+
+> Written and committed **before** the new measurement sessions below were run.
+> Honest disclosure: I had already seen the two earlier sessions in
+> `logs/requests.jsonl` (30 lines) when I wrote these, so criteria 8 and 9 are
+> set knowing the parking question was refused and the p95 was 5.5 s. I did not
+> loosen either target to fit. Criteria 1 to 5 above are about the unit 1-2
+> pipeline on `advice_threads` and are not re-judged here.
+
+**Scope of the extension:** `serve.py` request logging and timing,
+`send_questions.py`, `summarize_log.py`, default corpus `campus_life`.
+**Out of scope:** retrieval, chunking, the gate's logic, generation, hosting,
+log rotation, anything above one Windows machine.
+
+## 6. Every request is logged completely
+
+Over at least 5 sessions of the 15-request set, 100% of requests produce exactly
+one line in `logs/requests.jsonl` containing all 13 fields listed in `RUNNING.md`
+(`generation_ms` may be `null` only when `refused` is true or status is 400).
+
+**Why this target:** the log is the only evidence the service ran, so a single
+missing or malformed line breaks every other number. Any loss is a bug, so the
+target is 100%, not 95%.
+
+## 7. Refusals are the cheap path
+
+For refused requests (gate refusal, no model call), `total_ms` p95 is under
+200 ms, and `generation_ms` is `null` on every one.
+
+**Why this target:** a refusal does embedding and one vector search only. The
+two earlier sessions gave 39 to 85 ms, so 200 ms leaves headroom for a slow
+machine but would catch a model call leaking into the refusal path.
+
+## 8. In-scope questions are not refused
+
+At most 1 in 20 in-scope request answers is a false refusal (5%), measured on
+the 12 in-scope questions in `send_questions.py` over all sessions.
+
+**Why this target:** every false refusal is a student told "I don't have enough
+information" when the corpus does have it, and the gate's whole value is that
+it refuses *rightly*. The known risk: `how do I get a parking permit?` was
+refused at 0.5339 vs cutoff 0.5, which is 1 in 12 (8%), so I expect this to
+start MISSED.
+
+## 9. Answered requests are fast enough to use
+
+For answered requests (status 200, not refused), `total_ms` p95 is under 5000 ms
+across at least 5 sessions (at least 50 samples).
+
+**Why this target:** 5 s is roughly where a person waiting on a chat answer
+starts to give up. The earlier p95 was 5.5 s on 22 samples, dominated by the
+first request of a session; I expect it to be close, and I want enough samples
+to say whether the tail is cold start or the model.
+
+## 10. A clean checkout reproduces the gate's decisions
+
+For every question in the set, `best_distance` (to 4 decimals) and `refused`
+are identical between the working-copy sessions and a clean-checkout session.
+
+**Why this target:** retrieval is local and deterministic, so any difference
+means the checkout is not building the same index, which is exactly what a
+"runs somewhere that isn't my editor" claim has to rule out. Target is 15 of 15
+questions identical.
