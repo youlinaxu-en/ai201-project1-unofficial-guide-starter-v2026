@@ -654,14 +654,94 @@ Per-question results for one session (the other session gave the same distances,
 
 **Why the log, not the answer, found it.** The answer to a refused question is the same one-line refusal as any other. Without `best_distance` and `refused` in the request line, the parking miss looks identical to a correct refusal. The log fields made it visible.
 
+## Unit 9 Criteria, Verdicts, Diagnosis and Fix
+
+**Scope.** New in this unit: `serve.py` logging and timing, `send_questions.py`,
+`summarize_log.py`, default corpus `campus_life`, and one config change
+(`THRESHOLD`, below). **Out of scope:** retrieval, chunking, gate logic,
+generation, hosting, log rotation, more than one machine.
+
+The five extension criteria are criteria 6 to 10 in `criteria.md`, committed
+as `869a95d` before the new sessions were run. I had already seen the first two
+sessions when I wrote them, and `criteria.md` says so.
+
+**What was measured.** 7 sessions of the 15-request set, 105 log lines: sessions
+1 to 5 at cutoff 0.5 (before), sessions 6 and 7 at cutoff 0.56 (after).
+Session 2 is the clean-checkout session; the rest are on the working copy. I
+had to throw away one batch. My first three extra sessions came out with
+`generation_ms` of 0 to 23 ms because `generate.py` caches repeated prompts, so
+they measured the cache, not Gemini. I moved those 45 lines out of the log, then
+cleared `.cache/` before every later session. Any future latency session needs
+`.cache/` cleared first.
+
+| # | Criterion (target) | Result | Verdict |
+|---|---|---|---|
+| 6 | Every request logged with all 13 fields (100%) | 105 of 105 requests have a line, all 98 status-200 lines have all 13 fields, but the 7 HTTP 400 lines (empty question) carry only `ts`, `request_id`, `status`, `error`, `total_ms` | MISSED as written |
+| 7 | Refusal path p95 < 200 ms, `generation_ms` null on all | p95 104.8 ms (before), 117.9 ms (after); max 122 ms; 0 refusals with a model call | MET |
+| 8 | In-scope false refusals at most 5% | before: 5 of 60 = 8.3% (all 5 are the parking question); after: 0 of 24 | MISSED before, MET after the fix |
+| 9 | Answered p95 < 5000 ms, n at least 50 | pooled n = 79, p95 5474 ms (before-only n = 55: 5474 ms; after-only n = 24: 5050 ms) | MISSED |
+| 10 | Clean checkout reproduces `best_distance` and `refused` | all 14 questions that reach the gate have exactly one distance (4 dp) across all 7 sessions including the clean checkout; the only change in `refused` is parking, after I changed the cutoff | MET |
+
+How close: criterion 6 is a wording problem in my own criterion, not a missing
+log line: I wrote "all 13 fields" and a 400 never reaches the pipeline, so it
+cannot have `best_distance` or `sources`. I am leaving the MISSED verdict and
+not rewording the criterion after the fact. The 13-field check on status-200
+lines is 98 of 98. Criterion 9 missed by about 5% at n = 79, so it is a real
+miss but not a large one.
+
+**Diagnosis, criterion 8 (retrieval and gate, not generation).** The refused
+parking question has the right document as its best match
+(`admin_parking_permits.txt`) at distance 0.5339. The document is 307
+characters about when permits go on sale and sell out; it says nothing about
+how to apply. The question is phrased as a procedure ("how do I get"), and the
+document is phrased as an anecdote, so the embedding distance sits above the
+0.5 cutoff even though the right chunk ranked first. I checked the mechanism
+with `app.py retrieve` (no model calls): "when do parking permits go on sale?"
+gives 0.3423 and the bare "parking permit" gives 0.478, so the same document
+passes when the question uses its own vocabulary. The cutoff of 0.5 was set in
+unit 1 from five questions on `advice_threads`, where documents are longer
+forum threads and in-scope distances ran 0.16 to 0.40. On `campus_life`, which
+is shorter administrative text, in-scope best distances run 0.25 to 0.534.
+
+**The fix.** `config.py::THRESHOLD` 0.5 to 0.56. I measured best distances for
+nine adjacent-topic questions that the corpus should not answer. The closest was
+"what is the best meal plan at Harvard" at 0.5864; the next were 0.5994
+("parking permit at a different university") and 0.6131 (public library card).
+Every in-scope question is at 0.534 or below, so 0.56 is the midpoint of the
+gap, and nothing else changed. After the change, sessions 6 and 7 gave 0 of 24
+in-scope refusals and 4 of 4 out-of-scope questions refused. Criterion 8 moved
+from 8.3% to 0%.
+
+**Caveat on the fix.** The gap is 0.05 wide and rests on 9 adjacent questions plus 2 distant ones, so 0.56 is calibrated on a small sample and an
+unlucky in-scope question phrased as a procedure could still land above it, or
+an adjacent one below. The honest reading is "0 of 24 on the questions I had",
+not "the gate is fixed". I did not rerun the unit 2 evaluation at 0.56; that
+was on `advice_threads` and is untouched.
+
+**Diagnosis, criterion 9 (a pattern in the slow requests).** Nine requests are
+over 3.5 s. They fall into two groups. Three are model calls alone: 13.1 s, 8.6 s
+and 5.5 s of `generation_ms` with retrieval under 120 ms. Two have 2.1 to 2.3 s
+of `retrieval_ms`, which is the first request after a server process started
+(session 3 and session 6, retrieval otherwise about 80 ms), so the first call
+after a restart pays for loading the embedding model. Excluding session 1 the
+answered p95 is 3937 ms, so the miss is the first request after startup plus
+occasional slow Gemini calls, not typical load. I did not attempt a fix for
+this criterion: a warm-up request at server start would remove the retrieval
+half, and nothing I do locally changes Gemini's tail. I limited this unit to
+one attributable change.
+
 ## What's Still Missing
 
+- **Cutoff 0.56 was set on a small sample** (see the caveat above). It is
+  re-tuned for `campus_life`, but not stress-tested.
+- **Criterion 9 is unfixed.** First request after startup loads the embedding
+  model; a warm-up call in `serve.py` is the next step.
 - **No hosted version.** This is Path B, as described above. I did not test a hosted deploy.
 - **The model download was not exercised.** The `~/.cache/chroma` directory already existed on my machine, so the clean-checkout test did not download the 79 MB archive. The size and the "first run downloads it" behaviour in `RUNNING.md` come from the files on disk and the starter's documentation, not from watching the download happen.
 - **Small sample.** 28 successful requests over two sessions on one machine. Percentiles above p95 mean nothing here, and I have only one Windows machine's numbers.
 - **The log records the question text.** That is fine for a coursework corpus. A real deployment would have to decide whether to keep user questions at all.
 - **No log rotation or size limit.** `logs/requests.jsonl` grows without bound. For this project it is 30 lines.
-- **Cutoff not re-tuned for `campus_life`.** See the parking finding above.
+- **The earlier "What the Numbers Say" section describes the first two sessions at cutoff 0.5.** The cutoff and the false refusal there are superseded by the section above; I left that text as it was written.
 
 ## How I Used AI
 
