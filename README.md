@@ -569,3 +569,100 @@ shift worker", so the cutoff is actually tested.
 cannot run to a single-turn false-premise test. The lesson I would carry into
 the next unit is to check, before writing a criterion, that the code as it
 stands can produce the observation the criterion needs.
+
+
+---
+
+# Unit 9
+
+## What I Deployed
+
+**Path B, local with logs.** The system carries a local embedding model (`all-MiniLM-L6-v2` as an ONNX file, run by Chroma), which is the case the hosting section says does not fit a 512 MB free tier, so I did not host it. It runs on my machine from one documented sequence in `RUNNING.md` ("Unit 9 — deployment path: Path B"), and a structured log from real sessions is committed in `logs/requests.jsonl`.
+
+The extension is the operational layer around the existing pipeline. Nothing about retrieval, the gate or generation changed.
+
+- `serve.py`: every `POST /ask` now writes one JSON line to `logs/requests.jsonl` and to stdout. Fields: `ts`, `request_id`, `status`, `corpus`, `question`, `refused`, `best_distance`, `threshold`, `sources`, `answer_chars`, `retrieval_ms`, `generation_ms`, `total_ms`. Timing is split in two by passing a callback to `app.py::ask_pipeline` (`on_gate`), which fires after retrieval and the gate and before the model call, so retrieval and generation are measured separately. A refused question has `generation_ms: null` because no model call is made. 400 and 500 responses are logged too. A failure to write the log file is caught and reported on stdout instead of taking the service down.
+- `send_questions.py`: sends a fixed 15-request session to a running server (12 in-scope questions, 2 out-of-scope, 1 empty).
+- `summarize_log.py`: turns the log into counts, refusal rate and latency percentiles.
+- `config.py`: the default corpus is now `campus_life` (see the corpus note below).
+
+**Environment** (details in `RUNNING.md`): Python 3.13.13 on Windows 11 (3.11 to 3.13 supported, not 3.14); `chromadb 0.6.3`, `Flask 3.1.3`, `google-genai 1.75.0`, `gunicorn 23.0.0`, `onnxruntime 1.30.0`, `posthog 3.25.0`, `python-dotenv 1.1.1`, `rank-bm25 0.2.2`, installed from `requirements.txt`; embedding model downloaded on first index, a 79 MB archive that extracts to about 86 MB (`model.onnx`), about 166 MB on disk in total; `GEMINI_API_KEY` in `.env`. The index (`chroma_db/`) is gitignored, so every fresh checkout has to run `python app.py index` (88 chunks, 2.6 to 3.5 seconds once the model is present).
+
+**The command that starts it**, from a clean checkout:
+
+```
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env          # paste GEMINI_API_KEY
+python app.py index
+python serve.py                 # http://localhost:5000
+```
+
+**Corpus note.** Units 1 and 2 above were measured on `advice_threads`, and the cutoff of 0.5 was chosen there. For unit 9 I switched the default to `campus_life`, 88 short documents of course, dining and administrative information, so the log shows the service on a second corpus. The earlier run logs in `results/` were not re-run and still describe `advice_threads`. `run_eval.py` and `questions.py` were written for `advice_threads`; to reproduce the unit 2 numbers, set `AI201_CORPUS=advice_threads` and re-run `python app.py index`.
+
+## Run Record
+
+I ran the same 15-request session twice, once on my working copy and once from a fresh `git clone` into an empty directory with a new virtual environment, a new `pip install -r requirements.txt` and a freshly built index. That is two separate server processes and 30 log lines in `logs/requests.jsonl`. Both sessions started from `python serve.py` and sent the requests with `python send_questions.py`.
+
+My very first test session ran against `advice_threads` and mostly refused, because the questions I wrote belonged to `campus_life`. I deleted that log and re-ran, so the committed file contains only `campus_life` sessions.
+
+Output of `python summarize_log.py` on the committed file:
+
+```
+requests: 30  ok: 28  errors: 2
+refused: 6 (21%)  answered: 22
+mean best_distance: 0.454
+total       ms  p50=890.7  p95=5539.6  max=13380.9
+retrieval   ms  p50=71.6  p95=286.5  max=289.8
+generation  ms  p50=1117.7  p95=5501.0  max=13094.4
+```
+
+The 2 errors are the two deliberate empty-question requests (HTTP 400, one per session). Nothing returned a 500.
+
+Per-question results for one session (the other session gave the same distances, the same refusals and the same statuses):
+
+```
+| Question                                        | Refused | Best distance | Total ms (session 1) | Total ms (session 2) |
+|-------------------------------------------------|---------|---------------|----------------------|----------------------|
+| is the housing lottery random?                  | no      | 0.2541        | 13380.9              | 3653.1               |
+| how do I get a parking permit?                  | YES     | 0.5339        | 41.8                 | 61.8                 |
+| what is the add/drop deadline?                  | no      | 0.3790        | 5486.0               | 1229.0               |
+| how hard is CS 210?                             | no      | 0.4516        | 1720.7               | 890.7                |
+| what are the exams like in MATH 220?            | no      | 0.4657        | 784.6                | 865.9                |
+| how much work is BIOL 160?                      | no      | 0.4331        | 2138.5               | 3506.3               |
+| can I take a class pass/fail?                   | no      | 0.4048        | 1818.9               | 734.3                |
+| what is the printing quota?                     | no      | 0.4445        | 717.5                | 672.0                |
+| how do I request a transcript?                  | no      | 0.3482        | 3079.5               | 707.6                |
+| what are the graduation requirements?           | no      | 0.3268        | 1204.3               | 737.3                |
+| how do I appeal a grade?                        | no      | 0.3376        | 5539.6               | 1522.3               |
+| how do dining dollars work?                     | no      | 0.3501        | 961.5                | 816.8                |
+| what is the best pizza topping in Antarctica?   | yes     | 0.7427        | 38.9                 | 85.3                 |
+| who won the 1998 world cup?                     | yes     | 0.8794        | 71.6                 | 69.4                 |
+| (empty question)                                | 400     |               | 0.2                  | 0.2                  |
+```
+
+## What the Numbers Say
+
+**Where the time goes.** Generation, not retrieval. Retrieval has a median of 72 ms and a worst case of 290 ms across all 30 requests. Generation has a median of 1118 ms and goes up to 13094 ms. A refused question never reaches the model, so refusals cost 39 to 85 ms in total. That is the practical benefit of the gate: it is the cheapest path through the system as well as the safest one.
+
+**The tail is the model call, and the first request is the worst.** The slowest request in each session was the first one (13.4 s and 3.7 s), and the p95 of 5.5 s is one outlier amplified by a small sample, not a stable property. With 28 successful requests I would not claim anything about p99. The two sessions differ by a lot on the same questions (the housing-lottery answer took 13.4 s and then 3.7 s; `how do I request a transcript?` took 3.1 s and then 0.7 s), so a single session is a rough reading of generation time, and the 13.4 s figure includes whatever cold-start cost the first model call carries. I did not isolate that cost.
+
+**Retrieval is deterministic, and the log confirms it.** Every best distance is identical to four decimal places across the two sessions, and so are the refusals. That is the reason the second session is useful as a reproducibility check: the only thing that varies between runs is generation time and wording.
+
+**One in-scope question was refused.** `how do I get a parking permit?` has a best distance of 0.5339, over the cutoff of 0.5, so the gate refused it even though the corpus has `admin_parking_permits.txt`. This is a real false refusal that the log surfaced and that I had not seen before: my unit 1 cutoff was set from five in-scope questions on a different corpus, and on `campus_life` the other eleven in-scope questions fall between 0.2541 and 0.4657. The out-of-scope questions are at 0.7427 and 0.8794, so the two groups are well separated and the cutoff does not need to move much to fix this case. I have not changed it. The lowest value that would pass the parking question is just over 0.534; the lowest out-of-scope distance I measured, which must stay refused, is 0.7427; any cutoff between those two numbers separates this log's questions correctly. I did not choose one because two out-of-scope questions are not enough to set it responsibly, and raising it without more adjacent-topic out-of-scope questions would only move the problem.
+
+**Why the log, not the answer, found it.** The answer to a refused question is the same one-line refusal as any other. Without `best_distance` and `refused` in the request line, the parking miss looks identical to a correct refusal. The log fields made it visible.
+
+## What's Still Missing
+
+- **No hosted version.** This is Path B, as described above. I did not test a hosted deploy.
+- **The model download was not exercised.** The `~/.cache/chroma` directory already existed on my machine, so the clean-checkout test did not download the 79 MB archive. The size and the "first run downloads it" behaviour in `RUNNING.md` come from the files on disk and the starter's documentation, not from watching the download happen.
+- **Small sample.** 28 successful requests over two sessions on one machine. Percentiles above p95 mean nothing here, and I have only one Windows machine's numbers.
+- **The log records the question text.** That is fine for a coursework corpus. A real deployment would have to decide whether to keep user questions at all.
+- **No log rotation or size limit.** `logs/requests.jsonl` grows without bound. For this project it is 30 lines.
+- **Cutoff not re-tuned for `campus_life`.** See the parking finding above.
+
+## How I Used AI
+
+I asked Claude to read `serve.py`, `gate.py` and `app.py::ask_pipeline` and tell me whether the project fit option A, B or C. It found that `serve.py` already had the Flask shell and `ask_pipeline` returned `best_distance`, `refused` and `sources`, so the log fields I needed were already in the pipeline's return value. It then added the logger and timing to `serve.py` and wrote `send_questions.py` and `summarize_log.py`. I ran everything and read the output. My first batch of test questions was written against the wrong corpus and produced a 67% refusal rate that said nothing about the system; I switched to `campus_life`, rewrote the questions and re-ran from a deleted log. The parking-permit finding came from reading the per-question distances in the log, not from the summary line. I kept the cutoff at 0.5 and recorded the false refusal instead of tuning it to make the numbers look better.
